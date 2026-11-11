@@ -47,6 +47,8 @@ def main():
     ap.add_argument("--icao-from", default=None, help="export openAIP des terrains (fr_apt.json) : tous les codes LFxx")
     ap.add_argument("--print-cycle", action="store_true", help="affiche le cycle AIRAC en vigueur et s'arrête")
     ap.add_argument("--from-dir", default=None)
+    ap.add_argument("--pdf-dir", default=None, help="enregistre aussi chaque PDF ici (<OACI>.pdf), à publier tels quels avec la mention du SIA")
+    ap.add_argument("--files-base", default=None, help="adresse publique des PDF (écrite dans l'index : l'appli les télécharge de là)")
     ap.add_argument("--delay", type=float, default=0.5, help="pause entre deux téléchargements (politesse envers le SIA)")
     a = ap.parse_args()
     if a.print_cycle:
@@ -74,26 +76,31 @@ def main():
             files.append((ic, data))
             time.sleep(a.delay)
     entries, manual = [], []
+    if a.pdf_dir:
+        os.makedirs(a.pdf_dir, exist_ok=True)
     for ic, data in files:
         sha = hashlib.sha256(data).hexdigest()
+        if a.pdf_dir:
+            with open(os.path.join(a.pdf_dir, f"{ic}.pdf"), "wb") as fh:
+                fh.write(data)
         try:
             doc = fitz.open(stream=data, filetype="pdf")
             r = georef_page(doc, 0)
         except Exception as e:
-            manual.append({"icao": ic, "sha256": sha, "reason": repr(e)[:80]})
+            manual.append({"icao": ic, "sha256": sha, "bytes": len(data), "file": f"{ic}.pdf", "reason": repr(e)[:80]})
             continue
         if r["status"] != "ok":
-            manual.append({"icao": ic, "sha256": sha, "reason": r["reason"]})
+            manual.append({"icao": ic, "sha256": sha, "bytes": len(data), "file": f"{ic}.pdf", "reason": r["reason"]})
             continue
         entries.append({
-            "icao": ic, "sha256": sha, "bytes": len(data), "chartDate": r.get("chartDate"), "page": 1,
+            "icao": ic, "sha256": sha, "bytes": len(data), "file": f"{ic}.pdf", "chartDate": r.get("chartDate"), "page": 1,
             "georef": {k: round(v, 6) for k, v in r["georef"].items()}, "renderScale": r["renderScale"],
             "frame": [round(x, 2) for x in r["frameBox"]] if r["frameBox"] else None,
             "groundMetersPerPoint": r["groundMetersPerPoint"], "residualPt": r["residualPt"], "arp": r["arpHeader"],
         })
     out = {
         "format": "lim-nav-vac-index", "version": 1, "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "source": "Service de l'Information Aéronautique (SIA) - VAC, licence ouverte", "cycle": a.cycle,
+        "source": "Service de l'Information Aéronautique (SIA) - VAC, licence ouverte", "cycle": a.cycle, "filesBase": a.files_base,
         "entries": entries, "manual": manual,
     }
     json.dump(out, open(os.path.join(a.out, "index.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
