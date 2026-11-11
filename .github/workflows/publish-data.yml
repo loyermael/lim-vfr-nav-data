@@ -1,9 +1,8 @@
-# Tâche planifiée du DÉPÔT DE DONNÉES (un dépôt séparé du code de l'appli, à créer : voir docs/j9-donnees-auto.md).
-# À copier dans ce dépôt sous .github/workflows/publish-data.yml, avec le dossier tools/ de l'appli
-# (build-data-pack.mjs, fetch-openaip.mjs, fetch-weather.mjs). NON PUBLIÉ pour l'instant.
-#
-# Chaque heure : reconstruit le paquet de données (météo à chaque fois ; espaces et terrains seulement s'ils ont plus de 20 h),
-# puis le publie sur GitHub Pages (gratuit, avec les en-têtes CORS que l'appli exige).
+# Tâche planifiée du DÉPÔT DE DONNÉES (code de l'appli : autre dépôt).
+# Chaque heure : reconstruit le paquet (météo à chaque fois ; espaces et terrains seulement s'ils ont plus de 20 h), puis publie
+# sur GitHub Pages (gratuit, avec les en-têtes CORS que l'appli exige).
+# Une fois par cycle AIRAC (28 jours) : reconstruit aussi l'INDEX DES VAC (calage automatique de chaque carte du SIA, par empreinte
+# du PDF) ; l'index ne contient que des faits (empreintes, coefficients), pas les cartes elles-mêmes.
 name: publier-donnees
 on:
   schedule:
@@ -27,19 +26,38 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Reprendre le paquet publié (pour ne pas re-télécharger ce qui est encore récent)
         env:
           PAGES_URL: ${{ vars.PAGES_URL || format('https://{0}.github.io/{1}', github.repository_owner, github.event.repository.name) }}
         run: |
-          mkdir -p prev
+          mkdir -p prev/vac
           if [ -n "$PAGES_URL" ] && curl -sf "$PAGES_URL/manifest.json" -o prev/manifest.json; then
             jq -r '.countries[].datasets[].files[].path' prev/manifest.json | while read -r p; do
               mkdir -p "prev/$(dirname "$p")"
               curl -sf "$PAGES_URL/$p" -o "prev/$p" || echo "absent : $p"
             done
           fi
+          curl -sf "$PAGES_URL/vac/index.json" -o prev/vac/index.json || rm -f prev/vac/index.json
       - name: Construire le paquet
         run: node tools/build-data-pack.mjs --out pack --prev prev
+      - name: Index des VAC (une fois par cycle AIRAC)
+        continue-on-error: true
+        run: |
+          pip install --quiet pymupdf fonttools
+          CYCLE=$(python tools/build-vac-index.py --print-cycle)
+          mkdir -p pack/vac
+          if [ -f prev/vac/index.json ] && grep -q "\"cycle\": \"$CYCLE\"" prev/vac/index.json; then
+            cp prev/vac/index.json pack/vac/index.json
+            echo "index des VAC déjà à jour pour le cycle $CYCLE"
+          else
+            python tools/build-vac-index.py --out pack/vac --cycle auto --icao-from pack/fr/airfields/fr_apt.json --delay 0.7
+          fi
+      - name: Garder l'ancien index si la reconstruction a échoué
+        run: |
+          if [ ! -f pack/vac/index.json ] && [ -f prev/vac/index.json ]; then mkdir -p pack/vac && cp prev/vac/index.json pack/vac/index.json; fi
       - uses: actions/upload-pages-artifact@v3
         with:
           path: pack
