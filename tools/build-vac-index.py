@@ -85,19 +85,29 @@ def main():
                 fh.write(data)
         try:
             doc = fitz.open(stream=data, filetype="pdf")
-            r = georef_page(doc, 0)
         except Exception as e:
             manual.append({"icao": ic, "sha256": sha, "bytes": len(data), "file": f"{ic}.pdf", "reason": repr(e)[:80]})
             continue
-        if r["status"] != "ok":
-            manual.append({"icao": ic, "sha256": sha, "bytes": len(data), "file": f"{ic}.pdf", "reason": r["reason"]})
+        ok_pages, first_reason = [], None
+        for pn in range(min(len(doc), 4)):  # les cartes (approche, atterrissage, transit) sont en tête du fichier
+            try:
+                r = georef_page(doc, pn)
+            except Exception as e:
+                r = {"status": "manual", "reason": repr(e)[:80]}
+            if r["status"] == "ok":
+                ok_pages.append((pn, r))
+            elif first_reason is None:
+                first_reason = r["reason"]
+        if not ok_pages:
+            manual.append({"icao": ic, "sha256": sha, "bytes": len(data), "file": f"{ic}.pdf", "reason": first_reason})
             continue
-        entries.append({
-            "icao": ic, "sha256": sha, "bytes": len(data), "file": f"{ic}.pdf", "chartDate": r.get("chartDate"), "page": 1,
-            "georef": {k: round(v, 6) for k, v in r["georef"].items()}, "renderScale": r["renderScale"],
-            "frame": [round(x, 2) for x in r["frameBox"]] if r["frameBox"] else None,
-            "groundMetersPerPoint": r["groundMetersPerPoint"], "residualPt": r["residualPt"], "arp": r["arpHeader"],
-        })
+        for pn, r in ok_pages:
+            entries.append({
+                "icao": ic, "sha256": sha, "bytes": len(data), "file": f"{ic}.pdf", "chartDate": r.get("chartDate"), "page": pn + 1, "kind": r.get("kind", "vac"),
+                "georef": {k: round(v, 6) for k, v in r["georef"].items()}, "renderScale": r["renderScale"],
+                "frame": [round(x, 2) for x in r["frameBox"]] if r["frameBox"] else None,
+                "groundMetersPerPoint": r["groundMetersPerPoint"], "residualPt": r["residualPt"], "arp": r["arpHeader"],
+            })
     out = {
         "format": "lim-nav-vac-index", "version": 1, "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "source": "Service de l'Information Aéronautique (SIA) - VAC, licence ouverte", "cycle": a.cycle, "filesBase": a.files_base,

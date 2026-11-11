@@ -16,6 +16,7 @@ carte, ARP lu, qualité. Refuse (statut « manual ») plutôt que de livrer un c
 Usage : python tools/vac_georef.py AD-2.LFCQ.pdf [page]
 """
 import io
+from collections import Counter
 import json
 import math
 import re
@@ -75,19 +76,84 @@ def decoded_chars(doc, page):
     return chars
 
 
-def find_labels(chars):
-    """Étiquettes de graticule : (« lat » ou « lon », valeur en degrés décimaux, bbox)."""
+def raw_chars(page):
+    """Texte ordinaire du PDF (polices TrueType, non chiffrées) : (caractère, x0, y0, x1, y1), comme decoded_chars."""
+    out = []
+    try:
+        d = page.get_text("rawdict")
+    except Exception:
+        return out
+    for b in d.get("blocks", []):
+        for line in b.get("lines", []):
+            for s in line.get("spans", []):
+                for c in s.get("chars", []):
+                    out.append((c["c"], *c["bbox"]))
+            out.append((" ", None, None, None, None))
+    return out
+
+
+def find_labels(chars, loose=False):
+    """Étiquettes de graticule : (« lat » ou « lon », valeur en degrés décimaux, bbox).
+    Mode strict : « 43°46' » avec repère de minutes. Mode loose : aussi « 49°26'30" » (graduation à 30"), minutes sans repère, degrés et minutes sur deux lignes."""
     text = "".join(c[0] for c in chars)
     labels = []
-    for kind, rx in (("lat", r"(\d{2})\s?°\s?(\d{2})[’'\x92]"), ("lon", r"(\d{3})\s?°\s*(\d{2})[’'\x92]")):
+    tail = r"\s*(\d{2})\s*(['’′´\x92])?(?:\s*(\d{2})\s*[\"”″\x94])?(?!\s?NM|\s?°|\d)" if loose else r"\s*(\d{2})()[’'\x92]()"
+    for kind, rx in (("lat", r"(?<!\d)(\d{2})\s*[°º˚]" + tail), ("lon", r"(?<!\d)(\d{3})\s*[°º˚]" + tail)):
         for m in re.finditer(rx, text):
+            if m.group(3) is None and m.group(4) is None:
+                # ni repère de minutes ni secondes : « 46° 33 NM » est un relèvement ; on n'accepte que ce qui touche un trait de repère plus loin
+                pass
             cs = [c for c in chars[m.start():m.end()] if c[1] is not None]
             if not cs:
                 continue
             x0, y0 = min(c[1] for c in cs), min(c[2] for c in cs)
             x1, y1 = max(c[3] for c in cs), max(c[4] for c in cs)
-            labels.append((kind, int(m.group(1)) + int(m.group(2)) / 60.0, (x0, y0, x1, y1)))
+            val = int(m.group(1)) + int(m.group(2)) / 60.0 + (int(m.group(4)) / 3600.0 if m.group(4) else 0.0)
+            labels.append((kind, val, (x0, y0, x1, y1)))
     return labels, text
+
+
+def page_kind(text):
+    """Nature de la carte d'après son titre : approche à vue (app), atterrissage à vue (att), transit VFR (tran), sinon vac."""
+    t = re.sub(r"[^\x00-\x7f]", "?", text.upper())
+    if "APPROCHE" in t or re.search(r"\bAPP 0\d", t):
+        return "app"
+    if "ATTERRISSAGE" in t or re.search(r"\bATT 0\d", t):
+        return "att"
+    if "TRANSIT" in t or re.search(r"\bTRAN 0\d", t):
+        return "tran"
+    return "vac"
+
+
+def frame_from_ticks(page):
+    """Cadre de la carte = rectangle formé par les rangées de traits de graduation (bord gauche/droit pour la latitude, haut/bas pour la longitude).
+    Exclut les tableaux et le plan d'aérodrome placés sous la carte. None si une rangée manque."""
+    v, h = tick_lines(page)
+    w, hh = page.rect.width, page.rect.height
+
+    def mode(vals, minn=6):
+        c = Counter(round(x, 0) for x in vals)
+        if not c:
+            return None
+        k, n = c.most_common(1)[0]
+        return float(k) if n >= minn else None
+
+    xl = mode([t[1] for t in h if t[1] < w / 2])
+    xr = mode([t[2] for t in h if t[2] > w / 2])
+    yt = mode([t[1] for t in v if t[1] < hh / 2])
+    yb = mode([t[2] for t in v if t[2] > hh / 2])
+    # un côté sans rangée nette : on prend l'extrême des traits connus de ce côté (bord extérieur de la graduation)
+    if xl is None and h:
+        xl = min(t[1] for t in h)
+    if xr is None and h:
+        xr = max(t[2] for t in h)
+    if yt is None and v:
+        yt = min(t[1] for t in v)
+    if yb is None and v:
+        yb = max(t[2] for t in v)
+    if None in (xl, xr, yt, yb) or xr - xl < 150 or yb - yt < 150:
+        return None
+    return (xl, yt, xr, yb)
 
 
 def chart_date(text):
@@ -161,9 +227,22 @@ def consistent_subset(pts, tol=0.8):
 
 
 def georef_page(doc, page_no=0):
+    """Calage d'une page : d'abord le décodage strict (le plus sûr), puis, si besoin, un décodage plus souple (secondes, polices TrueType)."""
+    r = _georef_page(doc, page_no, False)
+    if r["status"] == "ok":
+        return r
+    r2 = _georef_page(doc, page_no, True)
+    return r2 if r2["status"] == "ok" else r
+
+
+def _georef_page(doc, page_no, loose):
     page = doc[page_no]
     chars = decoded_chars(doc, page)
-    labels, text = find_labels(chars)
+    labels, text = find_labels(chars, loose)
+    if loose:
+        rlabels, rtext = find_labels(raw_chars(page), True)  # pages à polices TrueType : texte lisible sans décodage
+        labels = labels + rlabels
+        text = text + " " + rtext
     v, h = tick_lines(page)
     arp = header_arp(text)
     lon_sign = -1.0 if arp and arp[1] < 0 else 1.0
@@ -179,17 +258,39 @@ def georef_page(doc, page_no=0):
     lon_pts = consistent_subset(sorted(set(lon_pts)), 0.8 * 1.0)
     lat_pts = consistent_subset(sorted(set(lat_pts)), 0.8 * 1.0)
     res = {"status": "manual", "reason": None}
-    if len(lon_pts) < 2 or len(lat_pts) < 2:
-        res["reason"] = f"repères insuffisants (lon {len(lon_pts)}, lat {len(lat_pts)})"
-        return res
-    fx = linfit([merx(lo) for _, lo in lon_pts], [t for t, _ in lon_pts])
-    fy = linfit([mery(la) for _, la in lat_pts], [t for t, _ in lat_pts])
+    isotropic = False
+    if len(lon_pts) >= 2 and len(lat_pts) == 1:
+        # une seule latitude étiquetée : la carte est conforme (même échelle en x et en y), l'échelle vient des longitudes
+        fx = linfit([merx(lo) for _, lo in lon_pts], [t for t, _ in lon_pts])
+        if fx is not None and fx[0] > 0:
+            t, la = lat_pts[0]
+            fy = (-fx[0], t + fx[0] * mery(la))
+            isotropic = True
+    elif len(lat_pts) >= 2 and len(lon_pts) == 1:
+        fy = linfit([mery(la) for _, la in lat_pts], [t for t, _ in lat_pts])
+        if fy is not None and fy[0] < 0:
+            t, lo = lon_pts[0]
+            fx = (-fy[0], t + fy[0] * merx(lo))
+            isotropic = True
+    if not isotropic:
+        if len(lon_pts) < 2 or len(lat_pts) < 2:
+            res["reason"] = f"repères insuffisants (lon {len(lon_pts)}, lat {len(lat_pts)})"
+            return res
+        fx = linfit([merx(lo) for _, lo in lon_pts], [t for t, _ in lon_pts])
+        fy = linfit([mery(la) for _, la in lat_pts], [t for t, _ in lat_pts])
     if fx is None or fy is None:
         res["reason"] = "repères alignés"
         return res
     a, b = fx
     c, d = fy
     c = -c  # y de la page vers le bas : py = −c·Y + d
+    if a < 0 < c and abs(abs(a) - c) / c < 0.05 and not isotropic and arp is None:
+        # longitudes décroissantes vers la droite avec une échelle cohérente : carte à l'ouest de Greenwich sans ARP dans l'en-tête (transit VFR) ;
+        # on inverse le signe des longitudes
+        lon_pts = [(t, -lo) for t, lo in lon_pts]
+        fx = linfit([merx(lo) for _, lo in lon_pts], [t for t, _ in lon_pts])
+        if fx is not None:
+            a, b = fx
     if a <= 0 or c <= 0:
         res["reason"] = f"sens des repères incohérent ({a:.6g} / {c:.6g}) : étiquettes mal associées ou carte pas orientée nord"
         return res
@@ -214,6 +315,7 @@ def georef_page(doc, page_no=0):
         arp_pt = ((a * merx(arp[1]) + b), (-c * mery(arp[0]) + d))
     # cadre de la carte : plus grand rectangle tracé qui contient les repères
     frame = None
+    tf = frame_from_ticks(page)
     xs = [t for t, _ in lon_pts]
     ys = [t for t, _ in lat_pts]
     for g in page.get_drawings():
@@ -222,7 +324,21 @@ def georef_page(doc, page_no=0):
             area = r.width * r.height
             if frame is None or area < frame[4]:  # le plus petit qui contient tout = le cadre
                 frame = (r.x0, r.y0, r.x1, r.y1, area)
+    old_frame = frame
+    new_frame = (tf[0], tf[1], tf[2], tf[3], (tf[2] - tf[0]) * (tf[3] - tf[1])) if tf is not None else None
+    inside = lambda f: f is not None and arp_pt is not None and f[0] - 5 <= arp_pt[0] <= f[2] + 5 and f[1] - 5 <= arp_pt[1] <= f[3] + 5
+    # cadre : celui des rangées de graduation s'il contient l'ARP (il exclut les plans et tableaux sous la carte), sinon le rectangle tracé
+    if arp_pt is None:
+        frame = new_frame or old_frame
+    elif inside(new_frame):
+        frame = new_frame
+    elif inside(old_frame):
+        frame = old_frame
+    else:
+        res["reason"] = f"ARP hors du cadre (x {arp_pt[0]:.0f}, y {arp_pt[1]:.0f}) : repères mal associés ou carte sans l'aérodrome"
+        return res
     res.update({
+        "kind": page_kind(text),
         "status": "ok",
         "georef": georef,
         "renderScale": RENDER_SCALE,
