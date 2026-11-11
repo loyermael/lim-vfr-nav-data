@@ -113,6 +113,25 @@ if (!only || only === "activities") {
   }
 } else keep("activities");
 
+if (!only || only === "obstacles") {
+  // obstacles officiels de l'AIP (ENR 5.4.1, DGAC) : fichier Excel du SIA, lu par un script Python (openpyxl) ; relu chaque semaine
+  if (!only && oldDs("obstacles") && hoursSince(oldDs("obstacles").updatedAt) < 24 * 7 && keep("obstacles")) console.log("obstacles : paquet précédent encore récent, conservé");
+  else {
+    const work = join(out, "_work", "ona");
+    rmSync(work, { recursive: true, force: true });
+    mkdirSync(work, { recursive: true });
+    const r = spawnSync(process.platform === "win32" ? "python" : "python3", [join(here, "fetch-aip-obstacles.py"), join(work, `${country}_ona.json`)], { stdio: "inherit" });
+    if (r.status === 0 && existsSync(join(work, `${country}_ona.json`))) {
+      publish("obstacles", "Obstacles (AIP : hauteurs, balisage, éoliennes)", work, [`${country}_ona.json`], {
+        updatedAt: new Date().toISOString(), maxAgeHours: 24 * 7, live: false, source: "SIA / DGAC, AIP France ENR 5.4.1", licence: "Licence Ouverte (source et date à citer)",
+      });
+    } else {
+      console.error("obstacles : échec du téléchargement ; on garde l'ancienne version si elle existe");
+      keep("obstacles");
+    }
+  }
+} else keep("obstacles");
+
 if (!only || only === "spots") {
   // points cotés indicatifs (maxima locaux du relief) : calculés une fois (tools/build-spot-heights.py), publiés tels quels
   const dataDir = join(here, "data");

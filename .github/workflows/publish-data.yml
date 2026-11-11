@@ -42,6 +42,8 @@ jobs:
             done
           fi
           curl -sf "$PAGES_URL/vac/index.json" -o prev/vac/index.json || rm -f prev/vac/index.json
+      - name: Dépendance Python des obstacles (lecture du fichier Excel du SIA)
+        run: pip install --quiet openpyxl
       - name: Construire le paquet
         run: node tools/build-data-pack.mjs --out pack --prev prev
       - name: Index des VAC (une fois par cycle AIRAC)
