@@ -17,7 +17,7 @@
  * Pas encore dans le paquet : fonds de carte, cartes VAC, NOTAM (sources non vérifiées), voir docs/j9-donnees-auto.md.
  */
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
 
@@ -112,6 +112,18 @@ if (!only || only === "activities") {
     }
   }
 } else keep("activities");
+
+if (!only || only === "spots") {
+  // points cotés indicatifs (maxima locaux du relief) : calculés une fois (tools/build-spot-heights.py), publiés tels quels
+  const dataDir = join(here, "data");
+  const f = `${country}_spot.json`;
+  if (existsSync(join(dataDir, f))) {
+    publish("spots", "Points cotés (indicatifs)", dataDir, [f], {
+      updatedAt: statSync(join(dataDir, f)).mtime.toISOString(), maxAgeHours: 24 * 90, live: false,
+      source: "Mapzen / AWS Open Data (relief Terrarium), maxima locaux : indicatif", licence: "Données ouvertes (Mapzen, AWS Open Data)",
+    });
+  } else keep("spots");
+} else keep("spots");
 
 if (!only || only === "weather") {
   const dir = run("fetch-weather.mjs", COUNTRIES[country].weatherBbox.map(String), "weather");
