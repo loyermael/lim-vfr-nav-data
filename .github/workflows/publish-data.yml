@@ -6,10 +6,8 @@
 # puis le publie sur GitHub Pages (gratuit, avec les en-têtes CORS que l'appli exige).
 name: publier-donnees
 on:
-  # Planification désactivée tant que le dépôt est privé : GitHub Pages gratuit exige un dépôt public, la publication échouerait.
-  # Pour l'activer (dépôt public) : décommenter les deux lignes suivantes.
-  # schedule:
-  #   - cron: "17 * * * *"
+  schedule:
+    - cron: "17 * * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -31,7 +29,7 @@ jobs:
           node-version: 24
       - name: Reprendre le paquet publié (pour ne pas re-télécharger ce qui est encore récent)
         env:
-          PAGES_URL: ${{ vars.PAGES_URL }}
+          PAGES_URL: ${{ vars.PAGES_URL || format('https://{0}.github.io/{1}', github.repository_owner, github.event.repository.name) }}
         run: |
           mkdir -p prev
           if [ -n "$PAGES_URL" ] && curl -sf "$PAGES_URL/manifest.json" -o prev/manifest.json; then
