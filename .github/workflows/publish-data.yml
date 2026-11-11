@@ -64,6 +64,7 @@ jobs:
           CYCLE=$(python ../tools/build-vac-index.py --print-cycle)
           echo "VAC : Service de l Information Aeronautique (SIA), licence ouverte. Fichiers non modifies, cycle AIRAC $CYCLE." > SOURCE.txt
           echo "Source : https://www.sia.aviation-civile.gouv.fr/" >> SOURCE.txt
+          cp ../pack/vac/index.json index.json
           git init -q -b vac-data
           git config user.name "github-actions"
           git config user.email "actions@users.noreply.github.com"
