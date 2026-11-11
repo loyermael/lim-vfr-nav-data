@@ -1,0 +1,56 @@
+# Tâche planifiée du DÉPÔT DE DONNÉES (un dépôt séparé du code de l'appli, à créer : voir docs/j9-donnees-auto.md).
+# À copier dans ce dépôt sous .github/workflows/publish-data.yml, avec le dossier tools/ de l'appli
+# (build-data-pack.mjs, fetch-openaip.mjs, fetch-weather.mjs). NON PUBLIÉ pour l'instant.
+#
+# Chaque heure : reconstruit le paquet de données (météo à chaque fois ; espaces et terrains seulement s'ils ont plus de 20 h),
+# puis le publie sur GitHub Pages (gratuit, avec les en-têtes CORS que l'appli exige).
+name: publier-donnees
+on:
+  # Planification désactivée tant que le dépôt est privé : GitHub Pages gratuit exige un dépôt public, la publication échouerait.
+  # Pour l'activer (dépôt public) : décommenter les deux lignes suivantes.
+  # schedule:
+  #   - cron: "17 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Reprendre le paquet publié (pour ne pas re-télécharger ce qui est encore récent)
+        env:
+          PAGES_URL: ${{ vars.PAGES_URL }}
+        run: |
+          mkdir -p prev
+          if [ -n "$PAGES_URL" ] && curl -sf "$PAGES_URL/manifest.json" -o prev/manifest.json; then
+            jq -r '.countries[].datasets[].files[].path' prev/manifest.json | while read -r p; do
+              mkdir -p "prev/$(dirname "$p")"
+              curl -sf "$PAGES_URL/$p" -o "prev/$p" || echo "absent : $p"
+            done
+          fi
+      - name: Construire le paquet
+        run: node tools/build-data-pack.mjs --out pack --prev prev
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: pack
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
