@@ -11,6 +11,7 @@
  * Jeux de données (chacun se met à jour INDÉPENDAMMENT dans l'appli) :
  *   airspaces  espaces aériens (openAIP)             }  package du pays, rafraîchis si > 20 h
  *   airfields  terrains, pistes, fréquences (openAIP) }
+ *   navdata    balises, points de report, obstacles (OSM via openAIP), décollages, points chauds : pour la carte aéro
  *   weather    METAR, TAF, SIGMET (aviationweather.gov) : donnée « vivante », sans package, rafraîchie à chaque exécution
  * Pas encore dans le paquet : fonds de carte, cartes VAC, NOTAM (sources non vérifiées), voir docs/j9-donnees-auto.md.
  */
@@ -72,8 +73,8 @@ function keep(id) {
 mkdirSync(out, { recursive: true });
 
 if (!only || only === "aero") {
-  const fresh = ["airspaces", "airfields"].every((id) => oldDs(id) && hoursSince(oldDs(id).updatedAt) < AERO_MAX_AGE_H);
-  if (fresh && ["airspaces", "airfields"].every(keep)) console.log("espaces et terrains : paquet précédent encore récent, conservé");
+  const fresh = ["airspaces", "airfields", "navdata"].every((id) => oldDs(id) && hoursSince(oldDs(id).updatedAt) < AERO_MAX_AGE_H);
+  if (fresh && ["airspaces", "airfields", "navdata"].every(keep)) console.log("espaces, terrains et données de navigation : paquet précédent encore récent, conservé");
   else {
     const dir = run("fetch-openaip.mjs", [country], "aero");
     if (dir && existsSync(join(dir, "manifest.json"))) {
@@ -81,13 +82,16 @@ if (!only || only === "aero") {
       const meta = { updatedAt: man?.downloadedAt ?? new Date().toISOString(), maxAgeHours: 24, live: false, source: man?.source ?? "openAIP", licence: man?.licence ?? "CC BY-NC 4.0" };
       publish("airspaces", "Espaces aériens", dir, [`${country}_asp.json`, "manifest.json"], meta);
       publish("airfields", "Terrains", dir, [`${country}_apt.json`, "manifest.json"], meta);
+      const nav = ["nav", "rpp", "obs", "hgl", "hot"].map((k) => `${country}_${k}.json`).filter((n) => existsSync(join(dir, n)));
+      if (nav.length > 0) publish("navdata", "Balises, points de report, obstacles", dir, [...nav, "manifest.json"], meta);
+      else keep("navdata");
     } else {
       failed++;
       console.error("espaces et terrains : échec du téléchargement ; on garde l'ancienne version si elle existe");
-      ["airspaces", "airfields"].forEach(keep);
+      ["airspaces", "airfields", "navdata"].forEach(keep);
     }
   }
-} else ["airspaces", "airfields"].forEach(keep);
+} else ["airspaces", "airfields", "navdata"].forEach(keep);
 
 if (!only || only === "weather") {
   const dir = run("fetch-weather.mjs", COUNTRIES[country].weatherBbox.map(String), "weather");

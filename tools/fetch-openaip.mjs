@@ -16,6 +16,16 @@ import { mkdirSync, writeFileSync } from "node:fs";
 
 const BASE = "https://storage.openaip.net/openaip-system-exports";
 const OUT = "data/openaip";
+// Jeux complémentaires pour la carte aéro (balises, points de report, obstacles, décollages, points chauds) : leur absence ne fait pas échouer.
+const OPTIONAL = ["nav", "rpp", "obs", "hgl", "hot"];
+
+/** Obstacles : on ne garde que ce qu'affiche la carte (7 Mo → environ 1,5 Mo). `what` = indice OpenStreetMap (éolienne, cheminée, pylône…). */
+function slimObstacles(list) {
+  return list.map((o) => ({
+    name: o.name, type: o.type, geometry: o.geometry, elevation: o.elevation, height: o.height,
+    what: o.osmTags?.["generator:source"] === "wind" ? "wind" : o.osmTags?.man_made ?? o.osmTags?.power ?? undefined,
+  }));
+}
 const countries = process.argv.slice(2).map((c) => c.toLowerCase());
 if (countries.length === 0) countries.push("fr");
 if (!countries.every((c) => /^[a-z]{2}$/.test(c))) {
@@ -34,36 +44,38 @@ const manifest = {
 
 let failed = 0;
 for (const c of countries) {
-  for (const kind of ["apt", "asp"]) {
+  for (const kind of ["apt", "asp", ...OPTIONAL]) {
+    const required = !OPTIONAL.includes(kind);
     const name = `${c}_${kind}.json`;
     let res;
     try {
-      res = await fetch(`${BASE}/${name}`);
+      res = await fetch(`${BASE}/${name}`, { signal: AbortSignal.timeout(180_000) });
     } catch (e) {
       console.error(`${name} : réseau indisponible (${e.message})`);
-      failed++;
+      if (required) failed++;
       continue;
     }
     if (!res.ok) {
       console.error(`${name} : HTTP ${res.status}, ignoré`);
-      failed++;
+      if (required) failed++;
       continue;
     }
-    const buf = Buffer.from(await res.arrayBuffer());
+    let buf = Buffer.from(await res.arrayBuffer());
     // Refuse un fichier tronqué ou qui n'est pas un tableau : on n'écrase jamais un bon fichier par un mauvais.
     let parsed;
     try {
       parsed = JSON.parse(buf.toString("utf8"));
     } catch {
       console.error(`${name} : JSON invalide (fichier tronqué ?), ignoré`);
-      failed++;
+      if (required) failed++;
       continue;
     }
     if (!Array.isArray(parsed)) {
       console.error(`${name} : un tableau était attendu, ignoré`);
-      failed++;
+      if (required) failed++;
       continue;
     }
+    if (kind === "obs") buf = Buffer.from(JSON.stringify(slimObstacles(parsed)));
     writeFileSync(`${OUT}/${name}`, buf);
     manifest.files.push({
       name,
