@@ -61,14 +61,14 @@ jobs:
         continue-on-error: true
         run: |
           cd vac-pdf
-          printf 'VAC : Service de l Information Aeronautique (SIA), licence ouverte. Fichiers non modifies, cycle AIRAC %s.
-Source : https://www.sia.aviation-civile.gouv.fr/
-' "$(python ../tools/build-vac-index.py --print-cycle)" > SOURCE.txt
+          CYCLE=$(python ../tools/build-vac-index.py --print-cycle)
+          echo "VAC : Service de l Information Aeronautique (SIA), licence ouverte. Fichiers non modifies, cycle AIRAC $CYCLE." > SOURCE.txt
+          echo "Source : https://www.sia.aviation-civile.gouv.fr/" >> SOURCE.txt
           git init -q -b vac-data
           git config user.name "github-actions"
           git config user.email "actions@users.noreply.github.com"
           git add -A
-          git commit -qm "VAC SIA, cycle $(python ../tools/build-vac-index.py --print-cycle)"
+          git commit -qm "VAC SIA, cycle $CYCLE"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" vac-data
       - name: Garder l'ancien index si la reconstruction a échoué
         run: |
