@@ -11,6 +11,7 @@
  * Jeux de données (chacun se met à jour INDÉPENDAMMENT dans l'appli) :
  *   airspaces  espaces aériens (openAIP)             }  package du pays, rafraîchis si > 20 h
  *   airfields  terrains, pistes, fréquences (openAIP) }
+ *   activities activités aériennes (parachutage, voltige, modélisme, treuillage) : AIP France ENR 5.5, SIA, rafraîchi chaque semaine
  *   navdata    balises, points de report, obstacles (OSM via openAIP), décollages, points chauds : pour la carte aéro
  *   weather    METAR, TAF, SIGMET (aviationweather.gov) : donnée « vivante », sans package, rafraîchie à chaque exécution
  * Pas encore dans le paquet : fonds de carte, cartes VAC, NOTAM (sources non vérifiées), voir docs/j9-donnees-auto.md.
@@ -92,6 +93,25 @@ if (!only || only === "aero") {
     }
   }
 } else ["airspaces", "airfields", "navdata"].forEach(keep);
+
+if (!only || only === "activities") {
+  // ENR 5.5 de l'AIP (4,8 Mo de HTML) : change à chaque cycle AIRAC (28 jours), on ne le relit qu'une fois par semaine
+  if ((!only && oldDs("activities") && hoursSince(oldDs("activities").updatedAt) < 24 * 7 && keep("activities")) ) console.log("activités : paquet précédent encore récent, conservé");
+  else {
+    const work = join(out, "_work", "act");
+    rmSync(work, { recursive: true, force: true });
+    mkdirSync(work, { recursive: true });
+    const r = spawnSync(process.execPath, [join(here, "fetch-aip-activities.mjs"), join(work, `${country}_act.json`)], { stdio: "inherit" });
+    if (r.status === 0 && existsSync(join(work, `${country}_act.json`))) {
+      publish("activities", "Activités aériennes (parachutage, voltige, modélisme…)", work, [`${country}_act.json`], {
+        updatedAt: new Date().toISOString(), maxAgeHours: 24 * 7, live: false, source: "Service de l'Information Aéronautique (SIA), AIP France ENR 5.5", licence: "Licence Ouverte (source et date à citer)",
+      });
+    } else {
+      console.error("activités : échec du téléchargement ; on garde l'ancienne version si elle existe");
+      keep("activities");
+    }
+  }
+} else keep("activities");
 
 if (!only || only === "weather") {
   const dir = run("fetch-weather.mjs", COUNTRIES[country].weatherBbox.map(String), "weather");
